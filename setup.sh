@@ -1,16 +1,17 @@
 #! /bin/sh
 
+#set -x
+
 cd bluez
 
-apt-get install autoconf make automake cmake libtool libglib2.0 libdbus-1-dev libudev-dev libical-dev libreadline-dev libtoolize --force
+sudo apt-get -y install autoconf make automake cmake libtool libglib2.0-dev libdbus-1-dev libudev-dev libical-dev libreadline-dev
 
-aclocal 
-autoheader 
-automake --force-missing --add-missing 
-autoconf
+./bootstrap
 ./configure --prefix=/usr --mandir=/usr/share/man --sysconfdir=/etc --localstatedir=/var --enable-experimental --with-systemdsystemunitdir=/lib/systemd/system --with-systemduserunitdir=/usr/lib/systemd
 make
 
-make install
+sudo make install
 
-sed -ie 's/ExecStart=//usr//local//libexec//bluetooth//bluetoothd/ExecStart=//usr//local//libexec//bluetooth//bluetoothd --experimental/g' /lib/systemd/system/bluetooth.service
+oldServiceRunSting='ExecStart=/usr/libexec/bluetooth/bluetoothd'
+newServiceRunSting='ExecStart=/usr/libexec/bluetooth/bluetoothd --experimental'
+sudo sed -i "s~$oldServiceRunSting~$newServiceRunSting~" /lib/systemd/system/bluetooth.service
