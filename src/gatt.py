@@ -17,6 +17,14 @@ GATT_DESC_IFACE =    'org.bluez.GattDescriptor1'
 
 LE_ADVERTISEMENT_IFACE = 'org.bluez.LEAdvertisement1'
 
+def value_to_string(val):
+    string = ''.join([chr(byte) for byte in val])
+    return string
+
+def string_to_value(string):
+    val = dbus.ByteArray(string)
+    return val
+
 class InvalidArgsException(dbus.exceptions.DBusException):
     _dbus_error_name = 'org.freedesktop.DBus.Error.InvalidArgs'
 
@@ -33,13 +41,87 @@ class FailedException(dbus.exceptions.DBusException):
     _dbus_error_name = 'org.bluez.Error.Failed'
 
 
+class Advertisement(dbus.service.Object):
+    PATH_BASE = '/org/softjoys/advertisement'
+
+    def __init__(self, bus, index, advertising_type):
+        self.path = self.PATH_BASE + str(index)
+        self.bus = bus
+        self.ad_type = advertising_type
+        self.service_uuids = None
+        self.manufacturer_data = None
+        self.solicit_uuids = None
+        self.service_data = None
+        self.include_tx_power = None
+        dbus.service.Object.__init__(self, bus, self.path)
+
+    def get_properties(self):
+        properties = dict()
+        properties['Type'] = self.ad_type
+        if self.service_uuids is not None:
+            properties['ServiceUUIDs'] = dbus.Array(self.service_uuids,
+                                                    signature='s')
+        if self.solicit_uuids is not None:
+            properties['SolicitUUIDs'] = dbus.Array(self.solicit_uuids,
+                                                    signature='s')
+        if self.manufacturer_data is not None:
+            properties['ManufacturerData'] = dbus.Dictionary(
+                self.manufacturer_data, signature='qv')
+        if self.service_data is not None:
+            properties['ServiceData'] = dbus.Dictionary(self.service_data,
+                                                        signature='sv')
+        if self.include_tx_power is not None:
+            properties['IncludeTxPower'] = dbus.Boolean(self.include_tx_power)
+        return {LE_ADVERTISEMENT_IFACE: properties}
+
+    def get_path(self):
+        return dbus.ObjectPath(self.path)
+
+    def add_service_uuid(self, uuid):
+        if not self.service_uuids:
+            self.service_uuids = []
+        self.service_uuids.append(uuid)
+
+    def add_solicit_uuid(self, uuid):
+        if not self.solicit_uuids:
+            self.solicit_uuids = []
+        self.solicit_uuids.append(uuid)
+
+    def add_manufacturer_data(self, manuf_code, data):
+        if not self.manufacturer_data:
+            self.manufacturer_data = dbus.Dictionary({}, signature='qv')
+        self.manufacturer_data[manuf_code] = dbus.Array(data, signature='y')
+
+    def add_service_data(self, uuid, data):
+        if not self.service_data:
+            self.service_data = dbus.Dictionary({}, signature='sv')
+        self.service_data[uuid] = dbus.Array(data, signature='y')
+
+    @dbus.service.method(DBUS_PROP_IFACE,
+                         in_signature='s',
+                         out_signature='a{sv}')
+    def GetAll(self, interface):
+        print 'GetAll'
+        if interface != LE_ADVERTISEMENT_IFACE:
+            raise InvalidArgsException()
+        print 'returning props'
+        return self.get_properties()[LE_ADVERTISEMENT_IFACE]
+
+    @dbus.service.method(LE_ADVERTISEMENT_IFACE,
+                         in_signature='',
+                         out_signature='')
+    def Release(self):
+        print '%s: Released!' % self.path
+
+
 class Application(dbus.service.Object):
     """
     org.bluez.GattApplication1 interface implementation
     """
-    def __init__(self, bus):
+    def __init__(self):
         self.path = '/'
         self.services = []
+        bus = dbus.SystemBus()
         dbus.service.Object.__init__(self, bus, self.path)
 
     def get_path(self):
@@ -64,6 +146,72 @@ class Application(dbus.service.Object):
 
         return response
 
+    def Register(self):
+        bus = dbus.SystemBus()
+
+        adapter = find_adapter(bus)
+        if not adapter:
+            print('GattManager1 interface not found')
+            return None
+
+        service_manager = dbus.Interface(
+                bus.get_object(BLUEZ_SERVICE_NAME, adapter),
+                GATT_MANAGER_IFACE)
+
+        print('Registering GATT application...')
+
+        service_manager.RegisterApplication(self.get_path(), {},
+                                        reply_handler=self.register_app_cb,
+                                        error_handler=self.register_app_error_cb)
+        return None
+
+    def Unregister(self):
+        bus = dbus.SystemBus()
+        adapter = find_adapter(bus)
+        if not adapter:
+            print('GattManager1 interface not found')
+            return None
+        service_manager = dbus.Interface(
+                bus.get_object(BLUEZ_SERVICE_NAME, adapter),
+                GATT_MANAGER_IFACE)
+        print('Unregistering GATT application...')
+        service_manager.UnregisterApplication(self.get_path())
+        return None
+
+    def register_ad_cb(self):
+        print('Advertisement registered')
+
+    def register_ad_error_cb(self, error):
+        print('Failed to register advertisement ' + str(error))
+
+    def OnRegister(self):
+        return
+
+    def OnRegisterFailed(self, error):
+        return
+
+    def register_app_cb(self):
+        print('Application registered')
+
+        bus = dbus.SystemBus()
+        self.advertisement = Advertisement(bus, 0, 'peripheral')
+        for service in self.services:
+            if service.get_advertised():
+                self.advertisement.add_service_uuid(service.uuid)
+        adapter = find_adapter(bus)
+        ad_manager = dbus.Interface(bus.get_object(BLUEZ_SERVICE_NAME, adapter),
+                                LE_ADVERTISING_MANAGER_IFACE)
+        ad_manager.RegisterAdvertisement(self.advertisement.get_path(), {},
+                                     reply_handler=self.register_ad_cb,
+                                     error_handler=self.register_ad_error_cb)
+
+        self.OnRegister()
+
+    def register_app_error_cb(self, error):
+        print('Failed to register application ' + str(error))
+        self.OnRegisterFailed(error)
+
+
 
 class Service(dbus.service.Object):
     """
@@ -71,13 +219,14 @@ class Service(dbus.service.Object):
     """
     PATH_BASE = '/org/softjoys/service'
 
-    def __init__(self, bus, index, uuid, primary):
+    def __init__(self, index, uuid, primary, advertised):
         self.path = self.PATH_BASE + str(index)
-        self.bus = bus
+        self.bus = dbus.SystemBus()
         self.uuid = uuid
         self.primary = primary
         self.characteristics = []
-        dbus.service.Object.__init__(self, bus, self.path)
+        self.advertised = advertised
+        dbus.service.Object.__init__(self, self.bus, self.path)
 
     def get_properties(self):
         return {
@@ -104,6 +253,9 @@ class Service(dbus.service.Object):
 
     def get_characteristics(self):
         return self.characteristics
+
+    def get_advertised(self):
+        return self.advertised
 
     @dbus.service.method(DBUS_PROP_IFACE,
                          in_signature='s',
@@ -191,6 +343,8 @@ class Characteristic(dbus.service.Object):
     def PropertiesChanged(self, interface, changed, invalidated):
         pass
 
+    def Notify(self, value):
+        self.PropertiesChanged(GATT_CHRC_IFACE, { 'Value': value }, [])
 
 class Descriptor(dbus.service.Object):
     """
@@ -238,79 +392,6 @@ class Descriptor(dbus.service.Object):
         raise NotSupportedException()
 
 
-class Advertisement(dbus.service.Object):
-    PATH_BASE = '/org/softjoys/advertisement'
-
-    def __init__(self, bus, index, advertising_type):
-        self.path = self.PATH_BASE + str(index)
-        self.bus = bus
-        self.ad_type = advertising_type
-        self.service_uuids = None
-        self.manufacturer_data = None
-        self.solicit_uuids = None
-        self.service_data = None
-        self.include_tx_power = None
-        dbus.service.Object.__init__(self, bus, self.path)
-
-    def get_properties(self):
-        properties = dict()
-        properties['Type'] = self.ad_type
-        if self.service_uuids is not None:
-            properties['ServiceUUIDs'] = dbus.Array(self.service_uuids,
-                                                    signature='s')
-        if self.solicit_uuids is not None:
-            properties['SolicitUUIDs'] = dbus.Array(self.solicit_uuids,
-                                                    signature='s')
-        if self.manufacturer_data is not None:
-            properties['ManufacturerData'] = dbus.Dictionary(
-                self.manufacturer_data, signature='qv')
-        if self.service_data is not None:
-            properties['ServiceData'] = dbus.Dictionary(self.service_data,
-                                                        signature='sv')
-        if self.include_tx_power is not None:
-            properties['IncludeTxPower'] = dbus.Boolean(self.include_tx_power)
-        return {LE_ADVERTISEMENT_IFACE: properties}
-
-    def get_path(self):
-        return dbus.ObjectPath(self.path)
-
-    def add_service_uuid(self, uuid):
-        if not self.service_uuids:
-            self.service_uuids = []
-        self.service_uuids.append(uuid)
-
-    def add_solicit_uuid(self, uuid):
-        if not self.solicit_uuids:
-            self.solicit_uuids = []
-        self.solicit_uuids.append(uuid)
-
-    def add_manufacturer_data(self, manuf_code, data):
-        if not self.manufacturer_data:
-            self.manufacturer_data = dbus.Dictionary({}, signature='qv')
-        self.manufacturer_data[manuf_code] = dbus.Array(data, signature='y')
-
-    def add_service_data(self, uuid, data):
-        if not self.service_data:
-            self.service_data = dbus.Dictionary({}, signature='sv')
-        self.service_data[uuid] = dbus.Array(data, signature='y')
-
-    @dbus.service.method(DBUS_PROP_IFACE,
-                         in_signature='s',
-                         out_signature='a{sv}')
-    def GetAll(self, interface):
-        print 'GetAll'
-        if interface != LE_ADVERTISEMENT_IFACE:
-            raise InvalidArgsException()
-        print 'returning props'
-        return self.get_properties()[LE_ADVERTISEMENT_IFACE]
-
-    @dbus.service.method(LE_ADVERTISEMENT_IFACE,
-                         in_signature='',
-                         out_signature='')
-    def Release(self):
-        print '%s: Released!' % self.path
-
-
 def find_adapter(bus):
     remote_om = dbus.Interface(bus.get_object(BLUEZ_SERVICE_NAME, '/'),
                                DBUS_OM_IFACE)
@@ -321,62 +402,3 @@ def find_adapter(bus):
             return o
 
     return None
-
-
-def register_application(app, register_app_cb, register_app_error_cb):
-    bus = dbus.SystemBus()
-
-    adapter = find_adapter(bus)
-    if not adapter:
-        print('GattManager1 interface not found')
-        return None
-
-    service_manager = dbus.Interface(
-            bus.get_object(BLUEZ_SERVICE_NAME, adapter),
-            GATT_MANAGER_IFACE)
-
-    print('Registering GATT application...')
-
-    service_manager.RegisterApplication(app.get_path(), {},
-                                    reply_handler=register_app_cb,
-                                    error_handler=register_app_error_cb)
-
-    return None
-
-
-def unregister_application(app):
-    bus = dbus.SystemBus()
-
-    adapter = find_adapter(bus)
-    if not adapter:
-        print('GattManager1 interface not found')
-        return None
-
-    service_manager = dbus.Interface(
-            bus.get_object(BLUEZ_SERVICE_NAME, adapter),
-            GATT_MANAGER_IFACE)
-
-    print('Unregistering GATT application...')
-
-    service_manager.UnregisterApplication(app.get_path())
-
-    return None
-
-
-def register_advertisement(advertisement, register_ad_cb, register_ad_error_cb):
-    bus = dbus.SystemBus()
-
-    adapter = find_adapter(bus)
-    if not adapter:
-        print 'LEAdvertisingManager1 interface not found'
-        return None
-
-    ad_manager = dbus.Interface(bus.get_object(BLUEZ_SERVICE_NAME, adapter),
-                                LE_ADVERTISING_MANAGER_IFACE)
-
-    ad_manager.RegisterAdvertisement(advertisement.get_path(), {},
-                                     reply_handler=register_ad_cb,
-                                     error_handler=register_ad_error_cb)
-    return None
-
-

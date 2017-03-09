@@ -1,224 +1,224 @@
 import dbus
 import gatt
 import array
+import wifi
 try:
   from gi.repository import GObject
 except ImportError:
   import gobject as GObject
 
 
-class TestService(gatt.Service):
-    """
-    Dummy test service that provides characteristics and descriptors that
-    exercise various API functionality.
-
-    """
+class SetupService(gatt.Service):
     TEST_SVC_UUID = '2E2760A0-5D28-4229-8BA5-C626FB012700'
 
-    def __init__(self, bus, index):
-        gatt.Service.__init__(self, bus, index, self.TEST_SVC_UUID, True)
-        self.add_characteristic(TestCharacteristic(bus, 0, self))
-        self.add_characteristic(TestEncryptCharacteristic(bus, 1, self))
-        self.add_characteristic(TestSecureCharacteristic(bus, 2, self))
+    STATE_INITIALIZED = 0
+    STATE_REDY_FOR_SETUP = 1
+    STATE_CONNECTED = 2
+    STATE_CONNECTING = 3
 
-class TestCharacteristic(gatt.Characteristic):
-    """
-    Dummy test characteristic. Allows writing arbitrary bytes to its value, and
-    contains "extended properties", as well as a test descriptor.
+    def __init__(self, index):
+        gatt.Service.__init__(self, index, self.TEST_SVC_UUID, True, True)
+        self.SSID = ''
+        self.password = ''
+        self.state = self.STATE_INITIALIZED
+        self.key = '123'
+        self.device = ''
+        self.state_characteristic = StateCharacteristic(2, self)
+        self.add_characteristic(SSIDCharacteristic(0, self))
+        self.add_characteristic(PassCharacteristic(1, self))
+        self.add_characteristic(self.state_characteristic)
+        self.add_characteristic(KeyCharacteristic(3, self))
 
-    """
+    def get_WiFiState(self):
+        return self.STATE_REDY_FOR_SETUP
+
+    def get_SSID(self):
+        return self.SSID
+
+    def set_SSID(self, SSID):
+        self.SSID = SSID
+
+    def set_Password(self, password):
+        self.password = password
+
+    def get_State(self):
+        return str(self.state)
+
+    def set_State(self, state, notify):
+        self.state = int(state)
+        if(notify):
+            self.state_characteristic.notify()
+
+    def set_Key(self, key, device):
+        if((key == self.key) and (self.state == self.STATE_INITIALIZED)):
+            self.set_State(self.get_WiFiState(), True)
+            self.device = device
+
+    def check_connection(self, device):
+        if (device == self.device):
+            return True
+        self.device = ''
+        self.set_State(self.STATE_INITIALIZED, True)
+        return False
+
+
+class SSIDCharacteristic(gatt.Characteristic):
     TEST_CHRC_UUID = '2E2760A0-5D28-4229-8BA5-C626FB012701'
 
-    def __init__(self, bus, index, service):
+    def __init__(self, index, service):
         gatt.Characteristic.__init__(
-                self, bus, index,
+                self, service.bus, index,
                 self.TEST_CHRC_UUID,
-                ['read', 'write', 'writable-auxiliaries'],
+                ['read', 'write'],
                 service)
-        self.value = []
-        self.add_descriptor(TestDescriptor(bus, 0, self))
-        self.add_descriptor(
-                CharacteristicUserDescriptionDescriptor(bus, 1, self))
+        self.add_descriptor(SSIDDescriptor(service.bus, 0, self))
 
     def ReadValue(self, options):
-        print('TestCharacteristic Read: ' + repr(self.value))
-        return self.value
+        if(not self.service.check_connection(options['device'])):
+            raise NotPermittedException()
+        val_str = self.service.get_SSID()
+        print('SSID read: ' + str(val_str))
+        return gatt.string_to_value(val_str)
 
     def WriteValue(self, value, options):
-        print('TestCharacteristic Write: ' + repr(value))
-        self.value = value
+        if(not self.service.check_connection(options['device'])):
+            raise NotPermittedException()
+        val_str = gatt.value_to_string(value)
+        print('SSID write: ' + str(val_str))
+        self.service.set_SSID(val_str)
 
 
-class TestDescriptor(gatt.Descriptor):
-    """
-    Dummy test descriptor. Returns a static value.
-
-    """
-    TEST_DESC_UUID = '2E2760A0-5D28-4229-8BA5-C626FB012702'
+class SSIDDescriptor(gatt.Descriptor):
+    TEST_DESC_UUID = '2901'
 
     def __init__(self, bus, index, characteristic):
         gatt.Descriptor.__init__(
                 self, bus, index,
                 self.TEST_DESC_UUID,
-                ['read', 'write'],
+                ['read'],
                 characteristic)
 
     def ReadValue(self, options):
-        return [
-                dbus.Byte('T'), dbus.Byte('e'), dbus.Byte('s'), dbus.Byte('t')
-        ]
+        return gatt.string_to_value('SSID')
 
 
-class CharacteristicUserDescriptionDescriptor(gatt.Descriptor):
-    """
-    Writable CUD descriptor.
-
-    """
-    CUD_UUID = '2901'
-
-    def __init__(self, bus, index, characteristic):
-        self.writable = 'writable-auxiliaries' in characteristic.flags
-        self.value = array.array('B', b'This is a characteristic for testing')
-        self.value = self.value.tolist()
-        gatt.Descriptor.__init__(
-                self, bus, index,
-                self.CUD_UUID,
-                ['read', 'write'],
-                characteristic)
-
-    def ReadValue(self, options):
-        return self.value
-
-    def WriteValue(self, value, options):
-        if not self.writable:
-            raise NotPermittedException()
-        self.value = value
-
-class TestEncryptCharacteristic(gatt.Characteristic):
-    """
-    Dummy test characteristic requiring encryption.
-
-    """
+class PassCharacteristic(gatt.Characteristic):
     TEST_CHRC_UUID = '2E2760A0-5D28-4229-8BA5-C626FB012703'
 
-    def __init__(self, bus, index, service):
+    def __init__(self, index, service):
         gatt.Characteristic.__init__(
-                self, bus, index,
+                self, service.bus, index,
                 self.TEST_CHRC_UUID,
-                ['encrypt-read', 'encrypt-write'],
+                ['write', 'writable-auxiliaries'],
                 service)
-        self.value = []
-        self.add_descriptor(TestEncryptDescriptor(bus, 2, self))
-        self.add_descriptor(
-                CharacteristicUserDescriptionDescriptor(bus, 3, self))
-
-    def ReadValue(self, options):
-        print('TestEncryptCharacteristic Read: ' + repr(self.value))
-        return self.value
+        self.add_descriptor(PassDescriptor(service.bus, 1, self))
 
     def WriteValue(self, value, options):
-        print('TestEncryptCharacteristic Write: ' + repr(value))
-        self.value = value
+        if(not self.service.check_connection(options['device'])):
+            raise NotPermittedException()
+        val_str = gatt.value_to_string(value)
+        print('Password write: ' + str(val_str))
+        self.service.set_Password(val_str)
 
-class TestEncryptDescriptor(gatt.Descriptor):
-    """
-    Dummy test descriptor requiring encryption. Returns a static value.
-
-    """
-    TEST_DESC_UUID = '2E2760A0-5D28-4229-8BA5-C626FB012704'
+class PassDescriptor(gatt.Descriptor):
+    TEST_DESC_UUID = '2901'
 
     def __init__(self, bus, index, characteristic):
         gatt.Descriptor.__init__(
                 self, bus, index,
                 self.TEST_DESC_UUID,
-                ['encrypt-read', 'encrypt-write'],
+                ['read'],
                 characteristic)
 
     def ReadValue(self, options):
-        return [
-                dbus.Byte('T'), dbus.Byte('e'), dbus.Byte('s'), dbus.Byte('t')
-        ]
+        return gatt.string_to_value('Password')
 
 
-class TestSecureCharacteristic(gatt.Characteristic):
-    """
-    Dummy test characteristic requiring secure connection.
-
-    """
+class StateCharacteristic(gatt.Characteristic):
     TEST_CHRC_UUID = '2E2760A0-5D28-4229-8BA5-C626FB012705'
 
-    def __init__(self, bus, index, service):
+    def __init__(self, index, service):
         gatt.Characteristic.__init__(
-                self, bus, index,
+                self, service.bus, index,
                 self.TEST_CHRC_UUID,
-                ['secure-read', 'secure-write'],
+                ['read', 'write', 'notify'],
                 service)
-        self.value = []
-        self.add_descriptor(TestSecureDescriptor(bus, 2, self))
-        self.add_descriptor(
-                CharacteristicUserDescriptionDescriptor(bus, 3, self))
+        self.add_descriptor(StateDescriptor(service.bus, 2, self))
 
     def ReadValue(self, options):
-        print('TestSecureCharacteristic Read: ' + repr(self.value))
-        return self.value
+        self.service.check_connection(options['device'])
+        val_str = self.service.get_State()
+        print('State read: ' + str(val_str))
+        return gatt.string_to_value(val_str)
 
     def WriteValue(self, value, options):
-        print('TestSecureCharacteristic Write: ' + repr(value))
-        self.value = value
+        if(not self.service.check_connection(options['device'])):
+            raise NotPermittedException()
+        val_str = gatt.value_to_string(value)
+        print('State write: ' + str(val_str))
+        self.service.set_State(val_str, False)
+
+    def StartNotify(self):
+        return
+
+    def StopNotify(self):
+        return
+
+    def notify(self):
+        val_str = self.service.get_State()
+        print('State notify: ' + str(val_str))
+        self.Notify(gatt.string_to_value(val_str))
 
 
-class TestSecureDescriptor(gatt.Descriptor):
-    """
-    Dummy test descriptor requiring secure connection. Returns a static value.
-
-    """
-    TEST_DESC_UUID = '2E2760A0-5D28-4229-8BA5-C626FB012706'
+class StateDescriptor(gatt.Descriptor):
+    TEST_DESC_UUID = '2901'
 
     def __init__(self, bus, index, characteristic):
         gatt.Descriptor.__init__(
                 self, bus, index,
                 self.TEST_DESC_UUID,
-                ['secure-read', 'secure-write'],
+                ['read'],
                 characteristic)
 
     def ReadValue(self, options):
-        return [
-                dbus.Byte('T'), dbus.Byte('e'), dbus.Byte('s'), dbus.Byte('t')
-        ]
+        return gatt.string_to_value('State')
 
 
-class TestAdvertisement(gatt.Advertisement):
-    def __init__(self, bus, index):
-        gatt.Advertisement.__init__(self, bus, index, 'peripheral')
-        self.add_service_uuid('2E2760A0-5D28-4229-8BA5-C626FB012700')
-        self.include_tx_power = True
+class KeyCharacteristic(gatt.Characteristic):
+    TEST_CHRC_UUID = '2E2760A0-5D28-4229-8BA5-C626FB012707'
+
+    def __init__(self, index, service):
+        gatt.Characteristic.__init__(
+                self, service.bus, index,
+                self.TEST_CHRC_UUID,
+                ['write', 'writable-auxiliaries'],
+                service)
+        self.add_descriptor(KeyDescriptor(service.bus, 2, self))
+
+    def WriteValue(self, value, options):
+        val_str = gatt.value_to_string(value)
+        print('Key write: ' + str(val_str))
+        self.service.set_Key(val_str, options['device'])
 
 
-class TestApplication(gatt.Application):
-    def __init__(self, bus):
-        gatt.Application.__init__(self, bus)
-        self.add_service(TestService(bus, 0))
+class KeyDescriptor(gatt.Descriptor):
+    TEST_DESC_UUID = '2901'
+
+    def __init__(self, bus, index, characteristic):
+        gatt.Descriptor.__init__(
+                self, bus, index,
+                self.TEST_DESC_UUID,
+                ['read'],
+                characteristic)
+
+    def ReadValue(self, options):
+        return gatt.string_to_value('Key')
 
 
-def register_app_cb():
-    print('GATT application registered')
-    bus = dbus.SystemBus()
-    ad = TestAdvertisement(bus, 0)
-    gatt.register_advertisement(ad, register_ad_cb, register_ad_error_cb)
-
-
-def register_app_error_cb(error):
-    print('Failed to register application: ' + str(error))
-    mainloop.quit()
-
-
-def register_ad_cb():
-    print 'Advertisement registered'
-
-
-def register_ad_error_cb(error):
-    print 'Failed to register advertisement: ' + str(error)
-    mainloop.quit()
+class SetupApplication(gatt.Application):
+    def __init__(self):
+        gatt.Application.__init__(self)
+        self.add_service(SetupService(0))
 
 
 def main():
@@ -226,19 +226,18 @@ def main():
 
     dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
 
-    bus = dbus.SystemBus()
-    app = TestApplication(bus)
+    app = SetupApplication()
 
     mainloop = GObject.MainLoop()
 
-    gatt.register_application(app, register_app_cb, register_app_error_cb)
+    app.Register()
 
     try:
         mainloop.run()
     except Exception, e:
         print e
     finally:
-        gatt.unregister_application(app)
+        app.Unregister()
 
 if __name__ == '__main__':
     main()
