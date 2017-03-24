@@ -16,4 +16,4 @@ oldServiceRunSting='ExecStart=/usr/libexec/bluetooth/bluetoothd'
 newServiceRunSting='ExecStart=/usr/libexec/bluetooth/bluetoothd --experimental'
 sudo sed -i "s~$oldServiceRunSting~$newServiceRunSting~" /lib/systemd/system/bluetooth.service
 
-sudo pip install python-wifi
+sudo pip install wireless
