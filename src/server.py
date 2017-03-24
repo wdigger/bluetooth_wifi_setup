@@ -22,7 +22,7 @@ class SetupService(gatt.Service):
         self.password = ''
         self.state = self.STATE_INITIALIZED
         self.key = '123'
-        self.device = ''
+        self.device = None
         self.state_characteristic = StateCharacteristic(2, self)
         self.add_characteristic(SSIDCharacteristic(0, self))
         self.add_characteristic(PassCharacteristic(1, self))
@@ -45,6 +45,8 @@ class SetupService(gatt.Service):
         return str(self.state)
 
     def set_State(self, state, notify):
+        if (state == self.state):
+            return
         self.state = int(state)
         if(notify):
             self.state_characteristic.notify()
@@ -55,11 +57,15 @@ class SetupService(gatt.Service):
             self.device = device
 
     def check_connection(self, device):
+        print('CC: self.device = "' + str(self.device) + '" device = "' + str(device) + '"')
+        if (self.device == None):
+            self.device = device
+            return True
         if (device == self.device):
             return True
-        self.device = ''
-        self.set_State(self.STATE_INITIALIZED, True)
-        return False
+        self.device = device
+        self.set_State(self.STATE_INITIALIZED, False)
+        return True
 
 
 class SSIDCharacteristic(gatt.Characteristic):
@@ -74,17 +80,21 @@ class SSIDCharacteristic(gatt.Characteristic):
         self.add_descriptor(SSIDDescriptor(service.bus, 0, self))
 
     def ReadValue(self, options):
+        print('SSID read:')
         if(not self.service.check_connection(options['device'])):
+            print('\tLocked')
             raise NotPermittedException()
         val_str = self.service.get_SSID()
-        print('SSID read: ' + str(val_str))
+        print('\tValue: : ' + str(val_str))
         return gatt.string_to_value(val_str)
 
     def WriteValue(self, value, options):
+        print('SSID write:')
         if(not self.service.check_connection(options['device'])):
+            print('\tLocked')
             raise NotPermittedException()
+        print('\tValue: ' + str(val_str))
         val_str = gatt.value_to_string(value)
-        print('SSID write: ' + str(val_str))
         self.service.set_SSID(val_str)
 
 
@@ -114,10 +124,12 @@ class PassCharacteristic(gatt.Characteristic):
         self.add_descriptor(PassDescriptor(service.bus, 1, self))
 
     def WriteValue(self, value, options):
+        print('Password write:')
         if(not self.service.check_connection(options['device'])):
+            print('\tLocked')
             raise NotPermittedException()
         val_str = gatt.value_to_string(value)
-        print('Password write: ' + str(val_str))
+        print('\tValue: ' + str(val_str))
         self.service.set_Password(val_str)
 
 class PassDescriptor(gatt.Descriptor):
@@ -152,10 +164,12 @@ class StateCharacteristic(gatt.Characteristic):
         return gatt.string_to_value(val_str)
 
     def WriteValue(self, value, options):
+        print('State write:')
         if(not self.service.check_connection(options['device'])):
+            print('\tLocked')
             raise NotPermittedException()
         val_str = gatt.value_to_string(value)
-        print('State write: ' + str(val_str))
+        print('\tValue: ' + str(val_str))
         self.service.set_State(val_str, False)
 
     def StartNotify(self):

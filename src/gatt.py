@@ -198,6 +198,7 @@ class Application(dbus.service.Object):
         for service in self.services:
             if service.get_advertised():
                 self.advertisement.add_service_uuid(service.uuid)
+                self.advertisement.add_manufacturer_data(0x0000, [0x01, 0x8B, 0xC9, 0x53, 0xC7, 0xAF])
         adapter = find_adapter(bus)
         ad_manager = dbus.Interface(bus.get_object(BLUEZ_SERVICE_NAME, adapter),
                                 LE_ADVERTISING_MANAGER_IFACE)
