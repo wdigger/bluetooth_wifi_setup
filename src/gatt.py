@@ -4,6 +4,7 @@ import dbus.mainloop.glib
 import dbus.service
 import array
 import sys
+from binascii import unhexlify
 
 BLUEZ_SERVICE_NAME = 'org.bluez'
 GATT_MANAGER_IFACE = 'org.bluez.GattManager1'
@@ -24,6 +25,24 @@ def value_to_string(val):
 def string_to_value(string):
     val = dbus.ByteArray(string)
     return val
+
+def long_to_bytes (val, length=1, endianness='big'):
+    width = length * 8
+    if (width == 0):
+        width = 8
+    width += 8 - ((width % 8) or 8)
+    fmt = '%%0%dx' % (width // 4)
+    s = unhexlify(fmt % val)
+
+    if endianness == 'little':
+        s = s[::-1]
+
+    return s
+
+def int_to_value(val, length=1):
+    int_val = int(val)
+    str_val = long_to_bytes(int_val, length)
+    return dbus.ByteArray(str_val)
 
 class InvalidArgsException(dbus.exceptions.DBusException):
     _dbus_error_name = 'org.freedesktop.DBus.Error.InvalidArgs'
@@ -101,10 +120,8 @@ class Advertisement(dbus.service.Object):
                          in_signature='s',
                          out_signature='a{sv}')
     def GetAll(self, interface):
-        print 'GetAll'
         if interface != LE_ADVERTISEMENT_IFACE:
             raise InvalidArgsException()
-        print 'returning props'
         return self.get_properties()[LE_ADVERTISEMENT_IFACE]
 
     @dbus.service.method(LE_ADVERTISEMENT_IFACE,
@@ -121,6 +138,7 @@ class Application(dbus.service.Object):
     def __init__(self):
         self.path = '/'
         self.services = []
+        self.manufacturer_data = []
         bus = dbus.SystemBus()
         dbus.service.Object.__init__(self, bus, self.path)
 
@@ -130,10 +148,12 @@ class Application(dbus.service.Object):
     def add_service(self, service):
         self.services.append(service)
 
+    def set_manufacturer_data(self, manufacturer_data):
+        self.manufacturer_data = manufacturer_data
+
     @dbus.service.method(DBUS_OM_IFACE, out_signature='a{oa{sa{sv}}}')
     def GetManagedObjects(self):
         response = {}
-        print('GetManagedObjects')
 
         for service in self.services:
             response[service.get_path()] = service.get_properties()
@@ -174,8 +194,8 @@ class Application(dbus.service.Object):
         service_manager = dbus.Interface(
                 bus.get_object(BLUEZ_SERVICE_NAME, adapter),
                 GATT_MANAGER_IFACE)
-        print('Unregistering GATT application...')
         service_manager.UnregisterApplication(self.get_path())
+        print('Unregistered GATT application...')
         return None
 
     def register_ad_cb(self):
@@ -198,7 +218,10 @@ class Application(dbus.service.Object):
         for service in self.services:
             if service.get_advertised():
                 self.advertisement.add_service_uuid(service.uuid)
-                self.advertisement.add_manufacturer_data(0x0000, [0x01, 0x8B, 0xC9, 0x53, 0xC7, 0xAF])
+
+        if(len(self.manufacturer_data) > 0):
+            self.advertisement.add_manufacturer_data(0x0000, self.manufacturer_data)
+
         adapter = find_adapter(bus)
         ad_manager = dbus.Interface(bus.get_object(BLUEZ_SERVICE_NAME, adapter),
                                 LE_ADVERTISING_MANAGER_IFACE)
